@@ -1,0 +1,29 @@
+[package]
+name = "arsort"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rhetro <rhetro@rhetroxc.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "A zero-runtime-allocation, arithmetic routing-based sorting micro-engine optimized for L1/L2 cache-bound datasets."
+repository = "https://github.com/rhetro/arsort"
+documentation = "https://docs.rs/arsort"
+keywords = ["sort", "sorting", "algorithm", "performance", "thread-local"]
+categories = ["algorithms", "data-structures", "memory-management"]
+
+[dev-dependencies]
+rand = "0.9"
+criterion = "0.5"
+voracious_radix_sort = "1.2"
+
+[[bench]]
+name = "arsort_bench"
+harness = false
+
+[[bench]]
+name = "comparison_bench"
+harness = false
+
+[[bench]]
+name = "large_scale_bench"
+harness = false
