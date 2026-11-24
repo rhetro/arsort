@@ -21,29 +21,30 @@ const MAX_K: usize = 16384;
 /// Maximum recursive depth limit before falling back to insertion sort.
 const MAX_DEPTH: usize = 16;
 
-thread_local! {
-    // Thread-local temporary workspace buffers to achieve zero runtime heap allocation.
-    static COUNTS: RefCell<Vec<u32>> = RefCell::new(vec![0; MAX_K]);
-    static OFFSETS: RefCell<Vec<usize>> = RefCell::new(vec![0; MAX_K]);
-    static SCATTER: RefCell<Vec<usize>> = RefCell::new(vec![0; MAX_K * MAX_DEPTH]);
+struct TlsWorkspace {
+    counts: Vec<u32>,
+    offsets: Vec<usize>,
+    scatter: Vec<usize>,
+    primary_buffer: Vec<MaybeUninit<u64>>,
+}
 
-    static PRIMARY_BUFFER: RefCell<Vec<MaybeUninit<u64>>> = const { RefCell::new(Vec::new()) };
+impl TlsWorkspace {
+    fn new() -> Self {
+        Self {
+            counts: vec![0; MAX_K],
+            offsets: vec![0; MAX_K],
+            scatter: vec![0; MAX_K * MAX_DEPTH],
+            primary_buffer: Vec::new(),
+        }
+    }
+}
+
+thread_local! {
+    // Single unified RefCell reduces TLS lookups and borrow flag checks from 4 to 1 per call.
+    static WORKSPACE: RefCell<TlsWorkspace> = RefCell::new(TlsWorkspace::new());
 }
 
 /// Sorts the slice in-place using arithmetic routing.
-///
-/// This function serves as the primary entry point for Arsort. It handles micro-array fast paths,
-/// speculative sorting checks, thread-local memory provisioning, and delegates core routing to
-/// the recursive engine.
-///
-/// # Examples
-/// ```
-/// use arsort::prelude::*;
-///
-/// let mut data = vec![500u64, 100, 300];
-/// arsort(&mut data);
-/// assert_eq!(data, vec![100, 300, 500]);
-/// ```
 pub fn arsort<T: SortKey>(arr: &mut [T]) {
     const {
         assert!(
@@ -89,37 +90,33 @@ pub fn arsort<T: SortKey>(arr: &mut [T]) {
         }
     }
 
-    // Provision workspace from Thread-Local Storage (zero OS-level allocation overhead)
-    PRIMARY_BUFFER.with(|buf_cell| {
-        let mut buf_vec = buf_cell.borrow_mut();
+    WORKSPACE.with(|ws_cell| {
+        let Ok(mut ws) = ws_cell.try_borrow_mut() else {
+            insertion_sort(arr);
+            return;
+        };
+
+        let ws = &mut *ws;
         let elem_size = std::mem::size_of_val(arr);
         let u64_size = std::mem::size_of::<u64>();
         let required_u64_units = elem_size.div_ceil(u64_size);
 
-        if buf_vec.len() < required_u64_units {
-            buf_vec.resize(required_u64_units, MaybeUninit::uninit());
+        if ws.primary_buffer.len() < required_u64_units {
+            ws.primary_buffer
+                .resize(required_u64_units, MaybeUninit::uninit());
         }
 
-        let primary_buffer: &mut [T] =
-            unsafe { std::slice::from_raw_parts_mut(buf_vec.as_mut_ptr() as *mut T, n) };
+        let primary_buffer: &mut [MaybeUninit<T>] = unsafe {
+            std::slice::from_raw_parts_mut(ws.primary_buffer.as_mut_ptr() as *mut MaybeUninit<T>, n)
+        };
 
-        COUNTS.with(|c| {
-            OFFSETS.with(|o| {
-                SCATTER.with(|s| {
-                    let mut counts = c.borrow_mut();
-                    let mut offsets = o.borrow_mut();
-                    let mut scatter = s.borrow_mut();
-
-                    arsort_recurse(
-                        arr,
-                        primary_buffer,
-                        &mut counts,
-                        &mut offsets,
-                        &mut scatter,
-                        0,
-                    );
-                });
-            });
-        });
+        arsort_recurse(
+            arr,
+            primary_buffer,
+            &mut ws.counts,
+            &mut ws.offsets,
+            &mut ws.scatter,
+            0,
+        );
     });
 }

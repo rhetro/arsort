@@ -144,7 +144,10 @@ fn find_bounds<T: SortKey>(arr: &[T]) -> (u64, u64) {
 /// Attempts topological fallback sort for highly duplicated datasets (<= 16 unique keys).
 /// Routes to AVX2 SIMD acceleration if target hardware supports it.
 #[inline(always)]
-pub fn try_topological_sort<T: SortKey>(arr: &mut [T], primary_buffer: &mut [T]) -> bool {
+pub fn try_topological_sort<T: SortKey>(
+    arr: &mut [T],
+    primary_buffer: &mut [MaybeUninit<T>],
+) -> bool {
     let n = arr.len();
     if n <= 100 || n > MAX_TOPOLOGICAL_LEN {
         return false;
@@ -164,7 +167,10 @@ pub fn try_topological_sort<T: SortKey>(arr: &mut [T], primary_buffer: &mut [T])
 /// Matches input keys against up to 16 unique active register nodes in parallel via SIMD vector operations.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2", enable = "bmi1")]
-unsafe fn try_topological_avx2<T: SortKey>(arr: &mut [T], primary_buffer: &mut [T]) -> bool {
+unsafe fn try_topological_avx2<T: SortKey>(
+    arr: &mut [T],
+    primary_buffer: &mut [MaybeUninit<T>],
+) -> bool {
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
 
@@ -248,7 +254,7 @@ unsafe fn try_topological_avx2<T: SortKey>(arr: &mut [T], primary_buffer: &mut [
     }
 
     let mut scatter_offsets = offsets;
-    let dst_ptr = primary_buffer.as_mut_ptr();
+    let dst_ptr = primary_buffer.as_mut_ptr() as *mut T;
 
     for (i, item) in arr.iter().enumerate() {
         let node_id = *node_indices_ptr.add(i) as usize;
@@ -265,7 +271,10 @@ unsafe fn try_topological_avx2<T: SortKey>(arr: &mut [T], primary_buffer: &mut [
 
 /// Scalar fallback for low-cardinality topological sorting when AVX2 is unavailable.
 #[inline(always)]
-fn try_topological_scalar<T: SortKey>(arr: &mut [T], primary_buffer: &mut [T]) -> bool {
+fn try_topological_scalar<T: SortKey>(
+    arr: &mut [T],
+    primary_buffer: &mut [MaybeUninit<T>],
+) -> bool {
     let n = arr.len();
     debug_assert!(
         n <= MAX_TOPOLOGICAL_LEN,
@@ -376,7 +385,7 @@ fn try_topological_scalar<T: SortKey>(arr: &mut [T], primary_buffer: &mut [T]) -
     }
 
     let mut scatter_offsets = offsets;
-    let dst_ptr = primary_buffer.as_mut_ptr();
+    let dst_ptr = primary_buffer.as_mut_ptr() as *mut T;
 
     for (i, item) in arr.iter().enumerate() {
         unsafe {
@@ -400,7 +409,7 @@ fn try_topological_scalar<T: SortKey>(arr: &mut [T], primary_buffer: &mut [T]) -
 /// or fractional multiplier bucket scatter passes.
 pub fn arsort_recurse<T: SortKey>(
     arr: &mut [T],
-    primary_buffer: &mut [T],
+    primary_buffer: &mut [MaybeUninit<T>],
     counts: &mut [u32],
     offsets: &mut [usize],
     scatter_workspace: &mut [usize],
@@ -448,7 +457,7 @@ pub fn arsort_recurse<T: SortKey>(
         scatter_offsets.copy_from_slice(&offsets[..k]);
 
         unsafe {
-            let dst_ptr = primary_buffer.as_mut_ptr();
+            let dst_ptr = primary_buffer.as_mut_ptr() as *mut T;
             for item in arr.iter() {
                 let idx = (item.sort_key() - min) as usize;
                 let dest_idx = scatter_offsets[idx];
@@ -490,7 +499,7 @@ pub fn arsort_recurse<T: SortKey>(
     scatter_offsets.copy_from_slice(&offsets[..k]);
 
     unsafe {
-        let dst_ptr = primary_buffer.as_mut_ptr();
+        let dst_ptr = primary_buffer.as_mut_ptr() as *mut T;
         for item in arr.iter() {
             let idx = calc_idx!(item);
             let dest_idx = scatter_offsets[idx];
